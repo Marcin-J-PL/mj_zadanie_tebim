@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<module>
+	<name>mj_zadanie_tebim</name>
+	<displayName><![CDATA[Min koszt dostawy produktu]]></displayName>
+	<version><![CDATA[1.0.0]]></version>
+	<description><![CDATA[Moduł do Prestashop, który na karcie produktu wyświetli najniższy możliwy koszt dostawy dla tego produktu]]></description>
+	<author><![CDATA[MarcinJ]]></author>
+	<tab><![CDATA[front_office_features]]></tab>
+	<is_configurable>1</is_configurable>
+	<need_instance>1</need_instance>
+</module>
