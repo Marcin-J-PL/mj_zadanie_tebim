@@ -1,28 +1,4 @@
 <?php
-/**
-* 2007-2025 PrestaShop
-*
-* NOTICE OF LICENSE
-*
-* This source file is subject to the Academic Free License (AFL 3.0)
-* that is bundled with this package in the file LICENSE.txt.
-* It is also available through the world-wide-web at this URL:
-* http://opensource.org/licenses/afl-3.0.php
-* If you did not receive a copy of the license and are unable to
-* obtain it through the world-wide-web, please send an email
-* to license@prestashop.com so we can send you a copy immediately.
-*
-* DISCLAIMER
-*
-* Do not edit or add to this file if you wish to upgrade PrestaShop to newer
-* versions in the future. If you wish to customize PrestaShop for your
-* needs please refer to http://www.prestashop.com for more information.
-*
-*  @author    PrestaShop SA <contact@prestashop.com>
-*  @copyright 2007-2025 PrestaShop SA
-*  @license   http://opensource.org/licenses/afl-3.0.php  Academic Free License (AFL 3.0)
-*  International Registered Trademark & Property of PrestaShop SA
-*/
 
 if (!defined('_PS_VERSION_')) {
     exit;
@@ -40,11 +16,6 @@ class Mj_zadanie_tebim extends Module
         $this->author = 'MarcinJ';
         $this->need_instance = 1;
 
-        /**
-         * Set $this->bootstrap to true if your module is compliant with bootstrap (PrestaShop 1.6)
-         */
-        $this->bootstrap = true;
-
         parent::__construct();
 
         $this->displayName = $this->l('Min koszt dostawy produktu');
@@ -53,172 +24,176 @@ class Mj_zadanie_tebim extends Module
         $this->ps_versions_compliancy = array('min' => '1.7', 'max' => '9.0');
     }
 
-    /**
-     * Don't forget to create update methods if needed:
-     * http://doc.prestashop.com/display/PS16/Enabling+the+Auto-Update
-     */
     public function install()
     {
-        Configuration::updateValue('MJ_ZADANIE_TEBIM_LIVE_MODE', false);
-
         return parent::install() &&
-            $this->registerHook('header') &&
-            $this->registerHook('displayBackOfficeHeader') &&
-            $this->registerHook('displayProductExtraContent');
+            $this->registerHook('displayProductAdditionalInfo');
     }
 
     public function uninstall()
     {
-        Configuration::deleteByName('MJ_ZADANIE_TEBIM_LIVE_MODE');
 
         return parent::uninstall();
     }
 
-    /**
-     * Load the configuration form
+
+    /* Do hooka nie są przekazywane żadne parametry
+     * Pobieramy id_product z Tools::getValue
      */
-    public function getContent()
+    public function hookDisplayProductAdditionalInfo()
     {
-        /**
-         * If values have been submitted in the form, process.
+        $res = $this->getProductBestCarierByPrice(Tools::getValue('id_product', 0));
+        if ($res === -1) {
+            return 'Brak dostępnych przewoźników dla tego produktu';
+        } elseif ($res === 0) {
+            return 'Darmowa dostawa dla tego produktu';
+        } else {
+            return 'Koszt dostawa od ' . Tools::displayPrice($res['0']) . ' (' . $res[1] . ')';
+        }
+    }
+
+    /** Zwracamy tablicę z dwoma elementami: koszt dostawy i nazwę przewoźnika
+     *  Jeżeli nie ma dostępnych przewoźników to zwracamy -1
+     *  Jeżeli produkt spełnia warunki darmowej dostawy to zwracamy 0
+     * 
+     * @param int $id_product
+     * @return array|int
+     */
+    public function getProductBestCarierByPrice(int $id_product)
+    {
+
+        if (!$id_product)
+            return -1;
+
+        $productObj = new Product($id_product);
+
+        // Jeżeli produkt sepłnia warunki darmowej dostawy to zwracamy 0
+        $shippingFreeWeight = Configuration::get('PS_SHIPPING_FREE_WEIGHT');
+        $shippingFreePrice = Configuration::get('PS_SHIPPING_FREE_PRICE');
+        if (
+            ($shippingFreeWeight && $productObj->weight >= $shippingFreePrice)
+            || ($shippingFreePrice && $productObj->price >= $shippingFreePrice)
+        )
+            return 0;
+
+        //Ustalamy id adresu dostawy zalogowanego klienta lub z koszyka
+        $id_address_delivery = $this->getIdAddressDelivery();
+
+        $carrier_list = Carrier::getAvailableCarrierList(
+            $productObj,
+            0,
+            $id_address_delivery,
+        );
+
+        //Możliwe, że dla danego id_address_delivery nie ma dostępnych przewoźników
+        if (empty($carrier_list)) {
+            $carrier_list = Carrier::getAvailableCarrierList(
+                $productObj,
+                0
+            );
+        }
+
+        if (empty($carrier_list)) {
+            return -1;
+        }
+
+        $min_cost = null;
+        $min_carrierObj = null;
+
+        foreach ($carrier_list as $key => $carrier) {
+            $carrierObj = new Carrier($key);
+            $shipping_cost = $this->getCarrierShippingCost($carrierObj, $productObj, $id_address_delivery);
+            if ($min_cost === null || $shipping_cost < $min_cost) {
+                $min_cost = $shipping_cost;
+                $min_carrierObj = $carrierObj;
+            }
+        }
+
+        return array($min_cost, $min_carrierObj->name);
+
+    }
+
+    /** Pobieramy id adresu dostawy z koszyka lub z profilu zalogowanego klienta
+     *  Jeżeli nie ma ani jednego ani drugiego to zwracamy null
+     *  @return int|null
+     */
+    private function getIdAddressDelivery()
+    {
+        $id_address_delivery = null;
+
+        if (Context::getContext()->cart->id_address_delivery) {
+            $id_address_delivery = Context::getContext()->cart->id_address_delivery;
+        } elseif (Context::getContext()->customer->id) {
+            $id_address_delivery = Address::getFirstCustomerAddressId(Context::getContext()->customer->id);
+        }
+
+        return $id_address_delivery;
+    }
+
+    /** Pobieramy id strefy na podstawie id adresu dostawy
+     *  Jeżeli nie ma id adresu dostawy to pobieramy domyślny kraj i jego strefę
+     *  @param int $id_address_delivery
+     *  @return int
+     */
+    private function getIdZone(int $id_address_delivery)
+    {
+        if ($id_address_delivery)
+            $id_zone = Address::getZoneById($id_address_delivery);
+        else {
+            $default_country = new Country(
+                (int) Configuration::get('PS_COUNTRY_DEFAULT'),
+                (int) Configuration::get('PS_LANG_DEFAULT')
+            );
+
+            $id_zone = (int) $default_country->id_zone;
+        }
+
+        return $id_zone;
+    }
+
+    /** Obliczamy koszt wysyłki dla danego przewoźnika i produktu
+     *  Jeżeli $use_tax jest true to doliczamy podatek do kosztu wysyłki
+     * @param Carrier $carrier
+     * @param Product $productObj
+     * @param int $id_address_delivery
+     * @param bool $use_tax
+     * @return float
+     */
+    private function getCarrierShippingCost(Carrier $carrier, Product $productObj, int $id_address_delivery, $use_tax = true)
+    {
+        $productPriceTaxIncl = Product::getPriceStatic($productObj->id, true);
+        $shipping_method = $carrier->getShippingMethod();
+        $id_zone = $this->getIdZone($id_address_delivery);
+
+        if ($carrier->range_behavior) {
+            if ($shipping_method == Carrier::SHIPPING_METHOD_WEIGHT) {
+                $shipping_cost = $carrier->getDeliveryPriceByWeight($productObj->weight, $id_zone);
+            } else {
+                $shipping_cost = $carrier->getDeliveryPriceByPrice($productPriceTaxIncl, $id_zone);
+            }
+
+        } else {
+            if ($shipping_method == Carrier::SHIPPING_METHOD_WEIGHT) {
+                $shipping_cost = $carrier->getDeliveryPriceByWeight($productObj->weight, $id_zone);
+            } else {
+                $shipping_cost = $carrier->getDeliveryPriceByPrice($productPriceTaxIncl, $id_zone);
+            }
+        }
+
+        /* Dodajemy opłatę manipulacyjną jeżeli koszt wysyłki jest większy od 0
+         * Jeżeli koszt wysyłki jest równy 0 to znaczy, że jest darmowa dostawa i nie dodajemy opłaty manipulacyjnej
          */
-        if (((bool)Tools::isSubmit('submitMj_zadanie_tebimModule')) == true) {
-            $this->postProcess();
+        if ($shipping_cost > 0) {
+            $shipping_cost += (float) Configuration::get('PS_SHIPPING_HANDLING');
         }
 
-        $this->context->smarty->assign('module_dir', $this->_path);
-
-        $output = $this->context->smarty->fetch($this->local_path.'views/templates/admin/configure.tpl');
-
-        return $output.$this->renderForm();
-    }
-
-    /**
-     * Create the form that will be displayed in the configuration of your module.
-     */
-    protected function renderForm()
-    {
-        $helper = new HelperForm();
-
-        $helper->show_toolbar = false;
-        $helper->table = $this->table;
-        $helper->module = $this;
-        $helper->default_form_language = $this->context->language->id;
-        $helper->allow_employee_form_lang = Configuration::get('PS_BO_ALLOW_EMPLOYEE_FORM_LANG', 0);
-
-        $helper->identifier = $this->identifier;
-        $helper->submit_action = 'submitMj_zadanie_tebimModule';
-        $helper->currentIndex = $this->context->link->getAdminLink('AdminModules', false)
-            .'&configure='.$this->name.'&tab_module='.$this->tab.'&module_name='.$this->name;
-        $helper->token = Tools::getAdminTokenLite('AdminModules');
-
-        $helper->tpl_vars = array(
-            'fields_value' => $this->getConfigFormValues(), /* Add values for your inputs */
-            'languages' => $this->context->controller->getLanguages(),
-            'id_language' => $this->context->language->id,
-        );
-
-        return $helper->generateForm(array($this->getConfigForm()));
-    }
-
-    /**
-     * Create the structure of your form.
-     */
-    protected function getConfigForm()
-    {
-        return array(
-            'form' => array(
-                'legend' => array(
-                'title' => $this->l('Settings'),
-                'icon' => 'icon-cogs',
-                ),
-                'input' => array(
-                    array(
-                        'type' => 'switch',
-                        'label' => $this->l('Live mode'),
-                        'name' => 'MJ_ZADANIE_TEBIM_LIVE_MODE',
-                        'is_bool' => true,
-                        'desc' => $this->l('Use this module in live mode'),
-                        'values' => array(
-                            array(
-                                'id' => 'active_on',
-                                'value' => true,
-                                'label' => $this->l('Enabled')
-                            ),
-                            array(
-                                'id' => 'active_off',
-                                'value' => false,
-                                'label' => $this->l('Disabled')
-                            )
-                        ),
-                    ),
-                    array(
-                        'col' => 3,
-                        'type' => 'text',
-                        'prefix' => '<i class="icon icon-envelope"></i>',
-                        'desc' => $this->l('Enter a valid email address'),
-                        'name' => 'MJ_ZADANIE_TEBIM_ACCOUNT_EMAIL',
-                        'label' => $this->l('Email'),
-                    ),
-                    array(
-                        'type' => 'password',
-                        'name' => 'MJ_ZADANIE_TEBIM_ACCOUNT_PASSWORD',
-                        'label' => $this->l('Password'),
-                    ),
-                ),
-                'submit' => array(
-                    'title' => $this->l('Save'),
-                ),
-            ),
-        );
-    }
-
-    /**
-     * Set values for the inputs.
-     */
-    protected function getConfigFormValues()
-    {
-        return array(
-            'MJ_ZADANIE_TEBIM_LIVE_MODE' => Configuration::get('MJ_ZADANIE_TEBIM_LIVE_MODE', true),
-            'MJ_ZADANIE_TEBIM_ACCOUNT_EMAIL' => Configuration::get('MJ_ZADANIE_TEBIM_ACCOUNT_EMAIL', 'contact@prestashop.com'),
-            'MJ_ZADANIE_TEBIM_ACCOUNT_PASSWORD' => Configuration::get('MJ_ZADANIE_TEBIM_ACCOUNT_PASSWORD', null),
-        );
-    }
-
-    /**
-     * Save form data.
-     */
-    protected function postProcess()
-    {
-        $form_values = $this->getConfigFormValues();
-
-        foreach (array_keys($form_values) as $key) {
-            Configuration::updateValue($key, Tools::getValue($key));
+        if ($use_tax) {
+            $address = Address::initialize((int) $id_address_delivery);
+            $carrier_tax = $carrier->getTaxesRate($address);
+            $shipping_cost *= 1 + ($carrier_tax / 100);
         }
+
+        return $shipping_cost;
     }
 
-    /**
-    * Add the CSS & JavaScript files you want to be loaded in the BO.
-    */
-    public function hookDisplayBackOfficeHeader()
-    {
-        if (Tools::getValue('configure') == $this->name) {
-            $this->context->controller->addJS($this->_path.'views/js/back.js');
-            $this->context->controller->addCSS($this->_path.'views/css/back.css');
-        }
-    }
-
-    /**
-     * Add the CSS & JavaScript files you want to be added on the FO.
-     */
-    public function hookHeader()
-    {
-        $this->context->controller->addJS($this->_path.'/views/js/front.js');
-        $this->context->controller->addCSS($this->_path.'/views/css/front.css');
-    }
-
-    public function hookDisplayProductExtraContent()
-    {
-        /* Place your code here. */
-    }
 }
