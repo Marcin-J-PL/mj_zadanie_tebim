@@ -44,12 +44,18 @@ class Mj_zadanie_tebim extends Module
     {
         $res = $this->getProductBestCarierByPrice(Tools::getValue('id_product', 0));
         if ($res === -1) {
-            return 'Brak dostępnych przewoźników dla tego produktu';
+            $message = $this->trans('Brak dostępnych przewoźników dla tego produktu', [], 'Modules.Mj_zadanie_tebim.Shop');
         } elseif ($res === 0) {
-            return 'Darmowa dostawa dla tego produktu';
+            $message = $this->trans('Darmowa dostawa dla tego produktu', [], 'Modules.Mj_zadanie_tebim.Shop');
         } else {
-            return 'Koszt dostawa od ' . Tools::displayPrice($res['0']) . ' (' . $res[1] . ')';
+            $message = $this->trans('Koszt dostawa od  %s ( %s )',[Tools::displayPrice($res['0']),$res[1]], 'Modules.Mj_zadanie_tebim.Shop');
         }
+        $this->smarty->assign([
+            'Message' => $message,
+        ]);
+
+        return $this->fetch('module:'.$this->name.'/views/templates/hook/display.tpl');
+
     }
 
     /** Zwracamy tablicę z dwoma elementami: koszt dostawy i nazwę przewoźnika
@@ -161,7 +167,7 @@ class Mj_zadanie_tebim extends Module
      */
     private function getCarrierShippingCost(Carrier $carrier, Product $productObj, int $id_address_delivery, $use_tax = true)
     {
-        $productPriceTaxIncl = Product::getPriceStatic($productObj->id, true);
+        $productPriceTaxIncl = Product::getPriceStatic($productObj->id, true,Tools::getValue('id_product_attribute', null));
         $shipping_method = $carrier->getShippingMethod();
         $id_zone = $this->getIdZone($id_address_delivery);
 
